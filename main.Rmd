@@ -1,0 +1,794 @@
+---
+title: "Project 1"
+output: pdf_document
+bibliography: /Users/thomaspagulatos/Documents/R_stuff/references.bib
+csl: /Users/thomaspagulatos/Documents/R_stuff/annals-of-data-science.csl
+link-citations: true
+---
+
+```{r ,include=FALSE}
+#Packages required and installation
+pkgs=c("mice","VIM","tidyverse","archive","ggplot2","dplyr","readr",
+       "knitr","caret","corrplot","FactoMineR","factoextra")
+for(p in pkgs){
+    if (!require(p,character.only=TRUE)) install.packages(p)
+}
+```
+
+
+# Introduction and Overview
+
+Hepatitis C is a disease of the liver caused by a hepatitis C virus (HCV) infection. The virulence of HCV varies, and the virus can cause both acute and chronic illness. Hepatitis C can be a life-threatening condition. There is currently no effective vaccine for the HCV virus; however, antiviral medications can be used to treat the disease. These medications can cure greater than 95% of those infected with HCV, but widespread access to this treatment is low.	
+
+Crucially, early detection, and subsequent fast treatment of the disease, can prevent the development of serious liver damage (such as fibrosis, cirrhosis, and hepatocellular carcinoma -- cancer of the liver cells)  -- this can improve a patient’s health in the long-term. According to the World Health Organisations (WHO), it is estimated that 58 million people globally are infected with HCV. It is also estimated that 290,000 deaths occurred in 2019 from related complications of HCV infection; most of these deaths were from cirrhosis, and hepatocellular carcinoma. Medical classification with machine learning is a fast-burgeoning field in data science. Its application in the detection of liver disease can provide enormous clinical and diagnostic benefits, such as faster disease detection and improved patient prognoses. We shall attempt, in this project, to create such a classifier.
+
+That data used in this project consisted of 615 observations, with 12 features, and a target category. Two classifiers are compared in this project: random forest (RF), and support vector machine (SVM). The data are split into a test and train set; the training set, with 12 features, is used by the classifiers in training. The metrics of accuracy, sensitivity, and specificity were used to compare the performance of the two models. Over-sampling, using the method SMOTE-NC (synthetic minority over-sampling technique -- nominal continuous), was employed to balance the minority data in a way that tries to improve the model, without introducing too much bias. PCA was used as a method of data analysis. The best performing model, for this instance of binary classification, was the hyper-parameter tuned RF model with SMOTE-NC, with the results (97.8%, 0.863, 0.994). We discuss whether such a model may be an option for the prediction of the presence of hepatitis C. 
+
+# The Data
+
+The dataset used in this project is the freely-available, and publicly-accessible, Hepatitis C dataset. The dataset was accessed via the MCI Machine Learning Repository [@HCV_data]. The dataset is comprised of 615 instances (or observations). There are 12 features and a target attribute called 'Category.' The target attribute has values of 'blood donors' (and 'suspected blood donors'), as well as 'hepatitis C,' 'fibrosis,' and 'cirrhosis.'
+
+For the purposes of binary classification, we shall group these data into two categories: 'Donor' (comprised of 'blood donors' and 'suspected blood donors'), and 'Liver Disease' (comprised of instances with 'hepatitis C,' 'fibrosis,' and 'cirrhosis').
+
+This list of features are as follows: age (in years), sex (m,f), and the blood markers Albumin (ALB), Alkaline phosphatase (ALP), Alanine amino-transferase (ALT), Aspartate amino-transferase (AST), Bilirubin (BIL), Choline esterase (CHE), Cholesterol (CHOL), Creatinine (CREA), Gamma-glutamyl transferase (GGT), Protein (PROT).
+
+# Exploratory Data Analysis (EDA)
+
+```{r}
+
+library(readr)
+library(archive)
+
+# read data from UCI Machine Learning Repository
+url_ <- "https://archive.ics.uci.edu/static/public/571/hcv+data.zip"
+data <- read_csv(archive_read(url_, 1), show_col_types = FALSE)
+data <- subset(data, select = -...1)
+
+# Let's look at the data, and do some EDA 
+
+# Data dimensions
+dim(data)
+
+# Check for missing data (where there is an 'NA')
+colSums(is.na(data))
+
+# Check for missing data 
+no.na <- sum(colSums(is.na(data)))
+
+# There are 615 rows, and 13 columns, so the total number of data points is:
+no.data.points <- (ncol(data)) * nrow(data)
+
+# Proportion of total data is missing
+(no.na / no.data.points) * 100
+
+# Inspect the data
+str(data)
+```
+
+We can see that there are five features (ALB, ALP, ALT, CHOL, PROT) in whose columns are entries labelled 'NA.' 
+Less than 1% of the data is missing or has the value 'NA.' This is quite a small value, and therefore our subsequent data imputation is likely to be successful.
+
+## Let us create plots to visualise the missing data
+
+```{r}
+
+library(mice)
+md.pattern(data, rotate.names=TRUE)
+
+# The following visual plot takes inspiration the website linked below
+# https://datascienceplus.com/imputing-missing-data-with-r-mice-package/
+
+# Create plots to visualise the nature of the missing data
+library(VIM)
+aggr_plot <- aggr(data, col=c('navyblue','red'),
+                  numbers=TRUE,
+                  sortVars=TRUE,
+                  labels=names(data),
+                  cex.axis=.7,
+                  gap=3,
+                  ylab=c("Histogram of missing data","Pattern"))
+
+
+```
+
+
+# Dealing With Missing Values -- Imputation
+
+Often, in the realm of data science and data analytics, one comes across many datasets within which the data are sparse. That is, there are multiple observations with data-values that are empty, 'NULL,' or simply coded as 'NA.'
+
+There are a few issues presented by the presence of missing data. Firstly, it can create bias. Next, it can make more difficult -- and sometimes intractable -- the utilisation, and the analysis, of data. Furthermore, the efficiency of a model can be greatly reduced by its presence. [@Barnard1999]
+
+So, how can we attempt to fix this issue? Importantly, one should not rush to simply erase the data with missing values (with the ostensible purpose of 'improving' or 'cleaning' the data) from the dataset entirely -- this presents a number of problems. This method can lead to poor, or completely false, results. Additionally, removing data could mask (or sabotage) the true nature, pattern, and values within the overall data.
+
+A process called imputation allows use to replace these absent data with (sometimes cleverly chosen) substitutes. A naive approach could be to impute zeros into all the missing values. Alternatively, one may use the mean of the column, or the median. These methods are often bad, since they do not take into consideration the relationships among the many other features. Also, it is limited to certain categories of data: namely numerical data, but not categorical, or strings.
+
+Multiple imputation by chained equations (MICE) was used, and it has the following steps [@Azur2011]: 
+
+1. Impute values into the missing positions are 'placeholders.' E.g., the mean can be imputed. 
+2. The the imputed 'placeholders' for only one variable (or feature) -- call this 'V' -- are put back to missing, or 'NA.'
+3. Observed values from V are regressed onto all of the other features. Put differently, V is used as the dependent variable of a regression model. The independent variables     are all the other variables.
+4. The missing values of the original feature V (i.e., the dependent feature) are subsequently replaced by values that are predicted by the regression model -- these are the     imputations. Note: as you impute other features, you use the changed observations of the prior features as independent variables in the following imputation.
+5. For each feature that contains missing values, steps 2-4 are repeated until all the features have been imputed on. I.e., there is no more missing data. At this point, we      have iterated through one 'cycle.'
+6. Repeat step 5 until the values imputed values converge, or the chosen number of cycles has been reached.
+
+Ten cycles have been performed [@raghunathan2002iveware]. The method used is predictive mean matching (PMM). PMM calculates values for each target feature 'V.' For each missing data value in V, 10 (it can be any specified value) values are calculated to choose from. One value from the 10 is chosen at random, and this is the value which is imputed. The distribution of the missing data point is assumed to be the same as that of the observed data of the 10 values.
+
+
+```{r}
+# Implement MICE, using predictive mean matching (PMM)
+set.seed(321)
+imputed_data <- mice(data, m=10, method = "pmm")
+
+```
+
+
+
+```{r}
+# Check to see that the imputing process has worked -- it has
+imp.data <- complete(imputed_data,10)
+data[542,]
+imp.data[542,]
+
+# Here, we see that there are no more NA's
+sapply(imp.data, function(x) sum(is.na(x)))
+
+```
+
+
+It is useful to create binary dummy variables for the male/female categorical data. This allows use to perform PCA, and oversampling, for example.
+
+```{r}
+# Convert male or female data to numeric type
+imp.data$Sex <- ifelse(imp.data$Sex=="m", 1, 0)
+# Swap columns
+imp.data <- imp.data %>% relocate(Category, Sex)
+```
+
+Let us explore the relationship (if any) between the presence of liver disease (hepatitis C), and sex.
+
+```{r}
+
+# Split data into 'Donor' and 'Diseased'
+data1 <- imp.data %>% 
+  mutate(Category = if_else(str_detect(Category, "Donor"), "Donor",
+                            "Liver Disease")) %>%
+  mutate(Category = factor(Category, levels = c("Liver Disease", "Donor"))) %>%
+  relocate(Category, .before = Category)
+
+# Create copy of data including the non-encoded categorical feature for use later
+data2 <- data1 %>% 
+  mutate(Sex = if_else(str_detect(Sex, "1"), "Male",
+                            "Female")) 
+
+# See how sex and liver disease are related
+# The ratio of male to females is weighted more towards males in the patients
+# with liver disease, as opposed to the donor category.
+sex.num <- data2 %>% group_by(Category, Sex) %>% summarise(N = n())
+
+ggplot(sex.num, aes(Category, N)) +
+  geom_col(aes(fill = Sex), position = "fill") +
+  scale_fill_brewer(palette = "Set1", direction = -1) +
+  xlab("") +
+  ylab("Proportion")
+```
+From the chart above, we can see that there is a higher proportion of liver disease among males than females. This supports data analysis on the subject, which found that 'HCV RNA positivity is significantly higher in males than females in adults.'[@AbdelGawad2023]
+
+
+## Now, let us create a correlation plot of the data.
+
+```{r}
+explore <- data1
+explore$Category <- as.numeric(explore$Category)
+cor_matrix <- cor(explore)
+library(corrplot)
+corrplot(cor_matrix, method="square", diag=TRUE)
+
+```
+
+We can see that there is a fairly strong negative correlation between AST, and Category (of disease). Then a slightly weaker, but somewhat marked correlation between BIL and Category (of disease), and GGT and Category.
+
+## Creation of training data, and test data. We shall explore the data more from the training set.
+
+Next, we shall create a 'training' dataset, on which we train our classifiers, and a 'testing' dataset, on which we shall test the performance of our classifiers later. The 70% to 30% split of training data to test data allows us to maintain enough data for the classifiers to learn from, while also making sure all the categories are represented within the datasets. This split is stratified, because the target class is imbalanced. In this way, we have made sure that each of the subcategories, or classes, (blood donor, suspect blood donor, hepatitis, fibrosis, and cirrhosis) are represented in the split test and train datasets in proportions representative of their presence in the entire data. Furthermore, let us make note of the highly imbalanced nature of this dataset, with respect to the minority classes -- something we shall return to later.
+
+
+```{r}
+library(caret)
+trainIndex <- createDataPartition(imp.data$Category, p = 0.7,
+                                  list = FALSE,
+                                  times = 1)
+# Sub-setting into training data
+train <- imp.data[ trainIndex,]
+
+# Sub-setting into testing data
+test <- imp.data[-trainIndex,]
+
+# Let us inspect these new dataframes using frequency tables
+as.data.frame(table(train$Category))
+as.data.frame(table(test$Category))
+
+```
+
+
+# Principal Component Analysis (PCA)
+
+
+PCA is one the primary methods for use in multivariate techniques.[@Jolliffe2022] The main aim of PCA is to take high-dimensional datasets and reduce the dimensions (features) [@Uddin2020] -- a process known as feature extraction, or feature reduction; the most important features are extracted, or the least important are removed. PCA attempts to find the fewest features that explain the maximum variance. PCA uses eigen-decomposition; eigenvectors and eigenvalues are used to convert a set of observations to a set of linearly uncorrelated variables -- these are known as principal components (PCs); these PCs maximise variance in a monotonic decreasing sequence. I.e., the first PC explains the most variance, and then subsequent ones explain less, and so on. PCA is commonly used in clinical studies [@Zhang2017]. PCA has also the aim of aiding in the interpretation of data, while also trying to minimise any information loss.[@Jolliffe_2016]
+
+
+The use of PCA is only really appropriate when we have datasets of continuous variables. If the data have categorical features, the common idea is to replace these values with hot-encoded (often binary) dummy variables. From here, one could perform PCA on this changed data. This can result in bias, since the dummy or binary variables do not have distributions comparable to those of the continuous features.[@pittir36564] To remedy this problem, we can use factor analysis of mixed data (FAMD). This method is similar to PCA, but it can data that contain both categorical and continuous features. FAMD uses a unique method of scaling in the multiple correspondence analysis (MCA) to equally balance the contributions of both categorical and continuous data, while it forms the principal components.[@Pags2014]
+
+
+Although PCA can be used on one-hot encoded binary data, that does not mean that it will be successful. There is a debate as to whether or not PCA should be used on binary categorical data (e.g., data the is one-hot encoded). We can certainly apply PCA to data that has features with binary values, but that does not mean we should. As we have noted before, PCA is designed to be implemented on data with continuous features. PCA is often naively employed, with little knowledge of better alternatives for mixed numerical and nominal data, such as FAMD. PCA tries to maximise variance (squared deviations), while minimising columns. When we use one-hot encoded categorical features, the notion of squared deviations breaks down. Although one may use these features in PCA, these results may not mean very much. For this reason, we shall remove the sex feature during the use of PCA. This is of course not ideal, since we are losing data, but we shall explore this method anyway for completion.
+
+
+Now, we want to mean-centre, and normalise, the data for use in classification, as well as PCA. It makes sense to do this to the continuous features. This can help certain classifiers (such as SVM) to converge faster. We normalise and mean-centre the data after splitting the data into the train dataset and test dataset. This is because we want to avoid any information seeping from our untouched test dataset into the train dataset. Otherwise, we might have completely biased results at the end, which can lead to predictions that make the performance of the classifier seem far better than it truly is. Note that, if we don't normalise the data, the model will be dominated by any features that have a much wider scale discrepancy -- this can damage the model.
+
+## Mean centre and normalise the test and train data
+
+```{r}
+train1 <- subset(train, select = -c(Category, Sex))
+test1 <- subset(test, select = -c(Category, Sex))
+
+# Mean-centre and normalise the 11 features, doing nothing to the target
+# category, of course
+preProcValues <- preProcess(train1, method = c("center", "scale"))
+
+# Now, we transform the test data set using the same transformation parameters
+# that we used on the training set -- this is important.
+train.transformed <- predict(preProcValues, train1)
+test.transformed <- predict(preProcValues, test1)
+
+# Recombine into full scaled datasets
+train.scaled <- cbind(subset(train, select = c(Category, Sex)), train.transformed)
+test.scaled <- cbind(subset(test, select = c(Category, Sex)), test.transformed)
+
+```
+
+At this stage, it is useful for future applications -- e.g. creating classifiers -- to change the datatype in Category from character to factor.
+
+Furthermore, we are interested in predicting if the patient is diseased or not -- i.e., that they fall into one of two categories: 'Donor' or 'Liver Disease' -- and so we shall split between 'Donor,' and 'Liver Disease.'
+
+```{r}
+train2 <- train.scaled %>% 
+  mutate(Category = if_else(str_detect(Category, "Donor"), "Donor",
+                            "Liver Disease")) %>%
+  mutate(Category = factor(Category, levels = c("Liver Disease", "Donor"))) %>%
+  relocate(Category, .before = Category) 
+
+test2 <- test.scaled %>%
+  mutate(Category = if_else(str_detect(Category, "Donor"), "Donor",
+                            "Liver Disease")) %>%
+  mutate(Category = factor(Category, levels = c("Liver Disease", "Donor"))) %>%
+  relocate(Category, .before = Category) 
+
+# Split our data into useful subsets. This is a common syntax.
+x.train <- subset(train2, select = -Category)
+y.train <- subset(train2, select = Category)
+x.test <- subset(test2, select = -Category)
+y.test <- subset(test2, select = Category)
+
+```
+
+## Now, we perform PCA with scaled, and mean-centred, values
+
+```{r}
+# We remove the target column, since we do not need this for PCA
+data.pca <- subset(train2, select = -c(Category, Sex))
+pca <- prcomp(data.pca)
+pca$rotation
+
+```
+
+```{r}
+# The main source of inspiration for this code was found here:
+# http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/112-pca-principal-component-analysis-essentials/
+
+# calculate total variance explained by each principal component
+var.explained = pca$sdev^2 / sum(pca$sdev^2)
+
+# Let us inspect the variance explained
+# This should be monotonically decreasing -- and it is
+var.explained
+
+#install.packages(c("FactoMineR", "factoextra"))
+library("FactoMineR")
+library("factoextra")
+
+# If we look at the cumulative proportion, we can see that 90% of the total
+# variance is explained by the first 9 principal components.
+summary(pca)
+
+# We can also get this by the following:
+cumsum(var.explained)
+
+# We see the eigenvalues, as well as variance percent, and cumulative variance
+# percent
+eig.val <- get_eigenvalue(pca)
+eig.val
+
+# Now, let us plot the cumulative proportion of variance explained
+
+cumulative.plot.data <- cumsum(var.explained)
+
+plot(cumulative.plot.data, xlab = "Principal Component", 
+     ylab = "Cumulative Proportion of Variance Explained", 
+     type = "b",
+     main = "Cumulative proportion of variance explained")
+abline(h = 0.975, col="red", v=10)
+
+# Plot graphs for visuals
+
+# Screeplot
+fviz_screeplot(pca, addlabels = TRUE, barfill = "blue", barcolor = "blue", 
+               linecolor = "red")
+
+# Correlation circle
+fviz_pca_var(pca, col.var = "contrib") 
+# Biplot
+fviz_pca_biplot(pca, col.ind="cos2", col.var = "red")
+```
+
+After performing PCA on the training set, we can see that ~97% of the variance is explained by 10/11 PCs. We can see this graphically in the plot of cumulative proportion of variance explained; the red horizontal line indicates 97.5% of variance explained -- this is seen by PC10. This seems to indicate that PCA isn’t very useful for these data as a method for dimension reduction. Note further that, after the first two principal components, the scree plot is fairly downwardly linear, with a slight overall concavity. 
+
+
+Looking at the correlation circle, and bi-plot, we can see the correlations of features with respect to the first to principal components. It is a helpful tool to see the importance of each explanatory variable. The direction of each arrow tell us if the correlation is positive or negative, and the lengths indicate the relative strength of the correlation.
+
+
+## Finding the elbow point
+
+
+The elbow point refers to the point at which the variance explained starts to level out. To calculate the point at which the PCs begin to 'elbow,' we take the maximum of the following two values:
+
+1. The point at which the PCs begin to explain only 5% of standard deviation, and the PCs up to that point explain 90% of the standard deviation. 
+
+2. The point at which the percentage change in variation between one PC and the next PC is below 0.1%.
+
+
+It is worth noting that this 'elbow' method is subjective, and it can be unreliable. Often, the 'elbow' point is ambiguous, especially when the scree plot does not have a distinct elbow.[@KETCHENJr1996] What it does seem to show is that PCA did not result in dimension reduction. In the scree plot above, we can see that there is no definitive point at which the variance explained starts to level out -- it happens very gradually.
+
+```{r}
+# Define the function from the source code:
+# https://rdrr.io/bioc/PCAtools/src/R/findElbowPoint.R
+
+# We use this because 'package "PCAtools" is not available for the most current
+# version of R.
+
+findElbowPoint <- function(variance) {
+  if (is.unsorted(-variance)) {
+    stop("'variance' should be sorted in decreasing order")
+  }
+
+  # Finding distance from each point on the curve to the diagonal.
+  dy <- -diff(range(variance))
+  dx <- length(variance) - 1
+  l2 <- sqrt(dx^2 + dy^2)
+  dx <- dx/l2
+  dy <- dy/l2
+
+  dy0 <- variance - variance[1]
+  dx0 <- seq_along(variance) - 1
+
+  parallel.l2 <- sqrt((dx0 * dx)^2 + (dy0 * dy)^2)
+  normal.x <- dx0 - dx * parallel.l2
+  normal.y <- dy0 - dy * parallel.l2
+  normal.l2 <- sqrt(normal.x^2 + normal.y^2)
+
+  # Picking the maximum normal that lies below the line.
+  # If the entire curve is above the line, we just pick the last point.
+  below.line <- normal.x < 0 & normal.y < 0
+  if (!any(below.line)) {
+      length(variance)
+  } else {
+      which(below.line)[which.max(normal.l2[below.line])]
+  }
+}
+
+findElbowPoint(var.explained)
+```
+
+
+
+# Factor Analysis of Mixed Data (FAMD)
+
+FAMD is a method of exploring data, and computing principal components, on data that consis of both categrical and continuous features. The continuous features are scaled so that their valiance is one, and the nominal features are transformed into a 'disjunctive data table.' These features are then scaled using the same method used in machine capability analysis (MCA). Let us implement FAMD.
+
+
+```{r}
+# The main source of inspiration for this code was found here:
+# http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/115-famd-factor-analysis-of-mixed-data-in-r-essentials/
+
+library("FactoMineR")
+
+data.famd <- subset(data2, select = -c(Category))
+
+# The dataset data.famd includes the categorical data that hasn't been hot,
+# encoded, minus the target variable.
+
+res.famd <- FAMD(data.famd, 
+                 graph = FALSE, 
+                 sup.var = NULL,  
+                 ncp=12)
+
+eig.val <- get_eigenvalue(res.famd)
+
+fviz_screeplot(res.famd)
+var <- get_famd_var(res.famd)
+
+fviz_famd_var(res.famd, "quanti.var", repel = TRUE,
+              col.var = "contrib")
+
+# Variance explained
+cumulative.plot.data1 <- eig.val[,3]
+
+plot(cumulative.plot.data1, xlab = "Principal Component", 
+     ylab = "Cumulative Proportion of Variance Explained", 
+     type = "b",
+     main = "Cumulative proportion of variance explained")
+abline(h = 97.5, col="red", v=11)
+
+# Calculate elbow point
+# Cumulative variance explained must be sorted in decreasing order
+findElbowPoint(rev(eig.val[,3]))
+
+
+```
+
+Note that from the scree plot, and the plot of 'cumulative proportion of variance explained,' there seems to be not much possibility of feature reduction again. The elbow point is calculated as 12 -- this further indicates that we shouldn't employ feature reduction.
+
+Looking at the correlation circle, we can see the correlations of features with respect to the first to principal components; note that these arrows are generally in similar directions to the ones found in PCA. It is a helpful tool to see the importance of each explanatory feature.
+
+
+# Models
+
+The two models that will be used for classification are random forest (RF), and support vector machine (SVM).
+
+## Performance metrics
+
+Some definitions:
+
+1. True positive (TP): Result where the test correctly predicts the presence of disease.
+2. True negative (TN): Result where the test correctly predicts the absence of disease.
+3. False positive (FP): Also known as Type I error, this is a result where a test incorrectly predicts the presence of disease.
+4. False negative (FN): Also known as Type II error, this is a results where a test incorrectly predicts the absence of disease.
+
+
+The metrics that will be used to assess the performance of the models will be accuracy, sensitivity, and specificity -- these are all related to the values TP, TN, FP, and FN.
+
+The \(accuracy\) is simply a total measure of how many observations, or instances of positive and negative results, were correctly predicted by the classifier.
+
+\[ Accuracy = \frac{TP + TN}{TP + TN + FP + FN}\]
+
+\(Sensitivity\) (or the true positive rate) is a measure of a classifier's ability to predict that a patient who truly has the disease is 'positive.' It takes values between 0 and 1. The higher the value of sensitivity, the fewer instances of false negative results are predicted by the classifier. This means that the classifier is missing fewer instances of the disease among the population. Sensitivity is given by the following equation. A low value is not good, and it means the classifier is failing to pick up disease in truly diseased patients.
+
+\[ Sensitivity = \frac{TP}{TP + FN}\]
+
+\(Specificity\) (or the true negative rate) is a measure of a classifier's ability to predict that a patient who truly does not have the disease is 'negative.' The higher the value of specificity, the fewer instances of false positive results are predicted by the classifier. A test (or classifier) with a low value of specificity is quite bad for diagnostic purposes; in such tests, many of the predictions will result in false positive -- i.e., they do not have the disease, but the test classifies them as positive, and they might subsequently undergo treatment, or further diagnostic tests, that are completely unnecessary.
+
+\[ Specificity = \frac{TN}{TN + FP}\]
+
+Ideally, in our classifier, we should like there to be simultaneously high values of sensitivity and specificity; however, there is often an asymmetry, or trade-off, between these two values. When a classifier has a high sensitivity, it is less likely to predict false negatives. In the general population, not all patients fall into strict categories, such as positive or negative. Sometimes, diseases are more nuanced, and some patients may lie within, as it were, a grey-area in between the two binary categories. Therefore, a decision must be made as to how much weight one puts on either one of the values when creating a suitable test.
+
+
+## Random Forest (RF)
+
+
+A random forest (RF) classifier involves a combination of many single classification trees. Each classifier is created using an independently-sampled random vector. Each individual tree gives a unit vote indicating the class which is most popular, and this is used to classify an input vector. Random forests are commonly used classifiers in medical fields for disease detection [@Yaqoob2021].
+
+```{r}
+# Create a random forest classifier that uses cross-validation
+
+train.data <- train2
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+model.rf <- train(Category~., data=train.data, method="rf", metric="Accuracy", trControl=control)
+
+# Test the model on unseen (scaled) test data
+pred_test <- predict(model.rf, x.test)
+cm <- confusionMatrix(pred_test, y.test$Category)
+cm
+
+# Link to code useful for plotting confusion matrix
+# https://stackoverflow.com/questions/37897252/plot-confusion-matrix-in-r-using-ggplot 
+
+library(dplyr)
+table <- data.frame(cm$table)
+plot <- table %>%
+  mutate(goodbad = ifelse(table$Prediction == table$Reference, "good", "bad")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+# fill alpha relative to sensitivity/specificity by proportional outcomes within reference groups (see dplyr code above as well as original confusion matrix for comparison)
+ggplot(data = plot, mapping = aes(x = Reference, y = Prediction, fill = goodbad, alpha = prop)) +
+  geom_tile() +
+  ggtitle("Confusion matrix: model.rf") + 
+  geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1) +
+  scale_fill_manual(values = c(good = "green", bad = "red")) +
+  theme(legend.position="none") +
+  xlim(rev(levels(table$Reference)))
+
+```
+
+The results show that there is an accuracy of 96.2%, a sensitivity of 0.682, and a specificity of 1.00.
+
+### Tuning/Hyper-parameter Optimisation
+
+Let us try to tune the hyper-parameter, and see if we can do any better. The hyper-parameter we are trying to optimise is 'mtry.' It is defined as 'the number of
+randomly drawn candidate variables out of which each split is selected when growing a tree.'[@RForest] Smaller values of this parameter create more varied, and uncorrelated, trees. Such forests often pay more attention to features that have a smaller correlation with the target variable. These features are often superseded by those with a stronger correlation, had they been candidates out of which the split is selected. A drawback is that these trees often perform worse on average -- variables that might not be useful are chosen instead. 
+
+As a default, in classification, the mtry value is usually put to be the square root of the number of feature columns.[@Bernard2009] However, better values can be found using trials. The mtry is bounded by the number of features, since it determines the number of candidates that are chosen at random at each stage of RF iteration.
+
+
+```{r}
+# Hyper-parameter optimisation
+
+tunegrid <- expand.grid(.mtry=seq(1, 12, length = 60))
+model.rf2 <- train(Category~., data=train.data, method="rf", metric="Accuracy", 
+                  tuneGrid=tunegrid, trControl=control)
+model.rf2
+
+```
+
+
+```{r}
+# Plot optimised model
+plot(model.rf2)
+```
+
+
+```{r}
+# Check the performance of the model
+pred_test0 <- predict(model.rf2, x.test)
+cm0 <- confusionMatrix(pred_test0, y.test$Category)
+cm0
+
+# Plot confusion matrix
+table <- data.frame(cm0$table)
+plot <- table %>%
+  mutate(goodbad = ifelse(table$Prediction == table$Reference, "good", "bad")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+# fill alpha relative to sensitivity/specificity by proportional outcomes within reference groups (see dplyr code above as well as original confusion matrix for comparison)
+ggplot(data = plot, mapping = aes(x = Reference, y = Prediction, fill = goodbad, alpha = prop)) +
+  geom_tile() +
+  ggtitle("Confusion matrix: model.rf2") + 
+  geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1) +
+  scale_fill_manual(values = c(good = "green", bad = "red")) +
+  theme(legend.position="none") +
+  xlim(rev(levels(table$Reference)))
+```
+
+
+## Support vector machine (SVM)
+
+SVM is a machine learning classification algorithm. It works by transforming the data in an optimal way such that these transformations determine boundaries within data, and between clusters of data based on already-defined features, labels, and target features. SVM is used in fields such as healthcare [@Zhou2022], as well as fields involving image classification. SVM algorithms map data to a feature space with increased dimension in order to categorise the data. This is done even when the data are not explicitly linearly separable. When such a boundary is found between the features, the algorithm transforms the data so that the boundary can be represented as a hyperplane. Next, the features in this new data are responsible for giving predictions, such as in which group new data should belong.
+
+
+```{r}
+train.control <- trainControl(method="repeatedcv", number=10, repeats=3)
+# Fit the model 
+svm1 <- train(Category ~., data = train.data, method = "svmLinear", trControl = train.control) # ,  preProcess = c("center","scale")
+#View the model
+svm1
+```
+
+
+```{r}
+# Check the performance of the model
+pred_test1 <- predict(svm1, x.test)
+cm1 <- confusionMatrix(pred_test1, y.test$Category)
+cm1
+
+# Plot confusion matrix
+table <- data.frame(cm1$table)
+plot <- table %>%
+  mutate(goodbad = ifelse(table$Prediction == table$Reference, "good", "bad")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+# fill alpha relative to sensitivity/specificity by proportional outcomes within reference groups (see dplyr code above as well as original confusion matrix for comparison)
+ggplot(data = plot, mapping = aes(x = Reference, y = Prediction, fill = goodbad, alpha = prop)) +
+  geom_tile() +
+  ggtitle("Confusion matrix: svm1") + 
+  geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1) +
+  scale_fill_manual(values = c(good = "green", bad = "red")) +
+  theme(legend.position="none") +
+  xlim(rev(levels(table$Reference)))
+
+```
+
+### Tuning/hyper-parameter optimisation
+
+The hyper-parameter 'C,' in SVM, is often referred to as the 'cost' of miss-classifying. A high value would indicate that we wish the model to greatly avoid miss-classification in training. You can imagine that the flexible kernel will bend around more values -- this can result in over-fitting, rendering a classifier useless on new unseen data. Therefore, there is a trade-off between high and low values with such a parameter; the classifier needs to learn where to place the hyper-plane boundary so as to maximise this trade-off. Note that a very small cost could result in the miss-classification of data that is linearly separable.
+
+
+```{r}
+# Hyperparameter optimisation
+svm2 <- train(Category ~., data = train.data, method = "svmLinear", 
+              trControl = train.control,
+              tuneGrid = expand.grid(C = seq(0.1, 5, length = 100)))
+
+plot(svm2)
+svm2$bestTune
+```
+
+We can see that as the 'C' value initially increases, it causes the accuracy of the classifier to increase a considerable amount until we start to see diminishing returns -- this is the point where accuracy of the classifier begins to plateau.
+
+
+```{r}
+# Check the performance of the model
+pred_test2 <- predict(svm2, x.test)
+cm2 <- confusionMatrix(pred_test2, y.test$Category)
+cm2
+
+# Plot confusion matrix
+table <- data.frame(cm2$table)
+plot <- table %>%
+  mutate(goodbad = ifelse(table$Prediction == table$Reference, "good", "bad")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+# fill alpha relative to sensitivity/specificity by proportional outcomes within
+# reference groups
+ggplot(data = plot, mapping = aes(x = Reference, y = Prediction, fill = goodbad, alpha = prop)) +
+  geom_tile() +
+  ggtitle("Confusion matrix: svm2") + 
+  geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1) +
+  scale_fill_manual(values = c(good = "green", bad = "red")) +
+  theme(legend.position="none") +
+  xlim(rev(levels(table$Reference)))
+
+```
+
+
+## Run models with PCA-transformed data -- this is mainly academic, since we know that PCA wasn't an ideal method for dimension reduction in this case.
+
+```{r}
+training.data <- cbind(subset(train2, select = c(Category)), pca$x)
+
+# Second number is the number of PCs - 1
+training.data <- training.data[,1:12]
+
+# Perform the same transformation to test data as was done of train data,
+# including mean centring and scaling.
+# We select the first 11 PCs, since PCA did not lead to dimension reduction
+testing.data <- as.data.frame(predict(pca, newdata = x.test))[,1:11]
+
+```
+
+
+```{r}
+# Train classifiers on pca-transformed data
+
+train.control <- trainControl(method="repeatedcv", number=10, repeats=3)
+tunegrid <- expand.grid(.mtry=sqrt(ncol(training.data)))
+model.rf.pca <- train(Category~., data=training.data, method="rf", metric="Accuracy", 
+                  tuneGrid=tunegrid, trControl=control)
+
+# Fit the model 
+svm.pca <- train(Category ~., data = training.data, method = "svmLinear", trControl = train.control)
+
+pred_test3 <- predict(model.rf.pca, testing.data)
+cm3 <- confusionMatrix(pred_test3, y.test$Category)
+cm3
+
+pred_test4 <- predict(svm.pca, testing.data)
+cm4 <- confusionMatrix(pred_test4, y.test$Category)
+cm4
+
+```
+
+```{r}
+# Plot confusion matrix
+table <- data.frame(cm3$table)
+plot <- table %>%
+  mutate(goodbad = ifelse(table$Prediction == table$Reference, "good", "bad")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+# fill alpha relative to sensitivity/specificity by proportional outcomes within
+# reference groups
+ggplot(data = plot, mapping = aes(x = Reference, y = Prediction, fill = goodbad, alpha = prop)) +
+  geom_tile() +
+  ggtitle("Confusion matrix: model.rf.pca") + 
+  geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1) +
+  scale_fill_manual(values = c(good = "green", bad = "red")) +
+  theme(legend.position="none") +
+  xlim(rev(levels(table$Reference)))
+
+# Plot confusion matrix
+table <- data.frame(cm4$table)
+plot <- table %>%
+  mutate(goodbad = ifelse(table$Prediction == table$Reference, "good", "bad")) %>%
+  group_by(Reference) %>%
+  mutate(prop = Freq/sum(Freq))
+
+# fill alpha relative to sensitivity/specificity by proportional outcomes within
+# reference groups
+ggplot(data = plot, mapping = aes(x = Reference, y = Prediction, fill = goodbad, alpha = prop)) +
+  geom_tile() +
+  ggtitle("Confusion matrix: svm.pca") + 
+  geom_text(aes(label = Freq), vjust = .5, fontface  = "bold", alpha = 1) +
+  scale_fill_manual(values = c(good = "green", bad = "red")) +
+  theme(legend.position="none") +
+  xlim(rev(levels(table$Reference)))
+
+```
+
+
+With the PCA-transformed data, the accuracy has been reduced in the RF model, and marginally increased in the SVM model. In general, there is no statistical benefit to using PCA data in classification models -- this we have shown, and it is consistent with the results. PCA is also used for reasons other than feature reduction, such as increasing computational efficiency, and interpreting data during EDA.
+
+
+# Over-sampling
+
+From the results about, we can see that, in all the models, the sensitivity is much lower than the specificity. Recall that a lower sensitivity means that the model is predicting a marked number false negatives, and therefore some instances of the disease are being missing by the classifier. The specificity is high in both models, which is good. So, what could account for this imbalance? One theory we shall test is the notion that, due to the highly imbalanced nature of the target classes, the models are biased to predicting that a patient who truly does not have the disease is 'negative.' Therefore, the model is missing some instances of the disease among the population. A method to attempt to rectify this issue is the process of over-sampling.
+
+
+We use over-sampling when the amount of our data is either too small, or highly imbalanced. When the data are more balanced in the training set, the models have a greater chance to learn how to correctly classify patients. SMOTE (synthetic minority over-sampling technique) is a method for over-sampling, but it doesn't deal with categorical data [@smote].
+
+
+The technique we shall use in this study is SMOTE-NC (synthetic minority over-sampling technique -- nominal continuous). Compared to random over-sampling, SMOTE-NC offers an improvement. Furthermore, SMOTE-NC has the ability of handling categorical data, such as the male/female class. Simply one-hot encoding these features would, in some algorithms, be interpreted as continuous data. Values between 0 and 1 may be be assigned. Furthermore, we should not naively round these, thinking that the algorithm is telling us that this person is predicted as 'more female' than male; this would have to same effect as simply choosing random values between 0 and 1 -- this is not what we wish to do. SMOTE-NC forms synthetic data by randomly sampling from minority classes. In our case, these are the classes with disease (hepatitis, fibrosis, and cirrhosis). SMOTE-NC has been used, with 'gradient boosting imputation based random forest classifiers' to predict the 'severity level of covid-19 patients with blood samples.' [@Gk2021] Unfortunately, many of these over-sampling methods are not available in R, or the packages have been removed from CRAN. Therefore, we shall use Python to perform this over-sampling of the data.
+
+
+Note that over-sampling has disadvantages, since it can introduce both 'noise' and 'bias' into the data. To avoid introducing much bias -- as much as we can help it -- we shall over-sample just the minority classes of hepatitis, fibrosis, and cirrhosis. Furthermore, we shall do this in a way such that the total number of instances of the classes of 'donor' and 'liver disease' remain fairly balanced. Otherwise, we might create a classifier than now skews more to high sensitivity, while simultaneously reducing specificity too much -- the pendulum will have swung too far in the other direction. Our method here attempts to mitigate this issue.
+
+
+We over-sample from already standardised data. Hence, the new synthetic data will also be standardised. In this way, we can just concatenate the SMOTE-NC data with the training dataset.
+
+
+## Please now see the smote.Rmd and smote.py files -- this step is outlined in the README.md file
+
+# Results and Conclusion
+
+We shall give the results for each model as follows: (accuracy, sensitivity, specificity).
+
+## Ranfom forest (RF)
+
+###  RF, normalised and mean-centred data
+No tuning: (96.2%, 0.682, 1.00)
+Tuning: (96.7%, 0.773, 0.994)
+
+### RF, PCA-transformed data
+No tuning: (94.0%, 0.636, 0.981)
+
+### RF, SMOTE-NC over-sampled data
+No tuning: (97.3%, 0.864, 0.988)
+Tuning: (97.8%, 0.863, 0.994)
+
+## Support vector machines (SVM)
+
+### SVM, normalised and mean-centred data
+No tuning: (95.6%, 0.727, 0.988)
+Tuning: (95.6%, 0.727, 0.988)
+
+### SVM, PCA-transformed data
+No tuning: (96.2%, 0.727, 0.994)
+
+### SVM, SMOTE-NC over-sampled data
+No tuning: (95.6%, 0.773, 0.981)
+Tuning: (94.0%, 0.682, 0.975)
+
+## Conclusion
+
+The application of machine learning algorithms to medical classification is a growing (but still emerging) field of study. It has been shown that the presence of disease can be successfully predicted, by the classifiers, using the features of the data provided. Ultimately, the use of PCA was not fruitful in the pursuit of dimension reduction, but it has been shown as a method for dimensional reduction in other medical classifiers [@GrateEscamila2020]. FAMD was then used, but the dimensions were again not reduced. The performance of each model was evaluated using the metric (accuracy, sensitivity, specificity). We adapted the data to create a binary classification problem, making the predictor choose between 'donor' and 'liver disease.'
+
+
+The best performing model was the hyper-perameter tuned RF model with SMOTE-NC, with the results (97.8%, 0.863, 0.994). This is a marked increase over the original values of (96.2%, 0.682, 1.00). Note that the presence of SMOTE-NC has successfully increased the sensitivity from 0.682, to 0.863. We notice that the specificity has gone down slightly, but we expect this, since there is usually a trade-off between these two values. We should note the limitations of the model in generating a high sensitivity. This is likely because of the large imbalance between the majority and minority classes of disease level in the original data. Ideally, in the future, we should like to test this model again with more data so that a more robust conclusion can be made. Nevertheless, in an attempt to solve this problem, over-sampling using SMOTE-NC was successfully employed, and its use formed the best performing model.
+
+
+In general, SMOTE-NC was successful at increasing the sensitivity of the classifiers in all but one case (the tuned SVM model). This model did not respond well to the use of over-sampled data. Commonly, using a different value of the hyper-parameter 'C' for each minority class is asymptotically equivalent to over-sampling by changing the class frequencies. Only one C value was tuned in the optimisation stage. This could have caused the reduced performance, but it is not entirely clear. Further analysis should be done into why this has happened.
+
+
+In each model using the PCA-transformed data led to different conclusions. With RF, its use weakened the classifier by reducing its accuracy, sensitivity and specificity. However, its use in SVM strengthened it, and increased the accuracy, while only marginally reducing the specificity. More analysis is required to understand why this is. One possibility is that the PCA data uses fewer features/columns than in the scaled data, or the scaled over-sampled data.
+
+
+As we can see, the tuning of hyper-parameters generally helped the models to perform better, except in the instance of SVM with SMOTE-NC. The method of hyper-parameter optimisation used in this project was very basic. In the future, this should be made more robust. A way of doing this could be the use of programs such as ‘Optuna.’
+
+
+It seems that the level of certain blood markers (proteins and amino acids) is a successful predictor of a patient's possibility of having liver disease, and it has been shown to be a good predictor of the absence of liver disease in patients -- this is shown in the generally very high specificity values in the models. In the future, it would be interesting to test these models on datasets with different features, and also datasets from different diseases.
+
+
+# References
+
+
+

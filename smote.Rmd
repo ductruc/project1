@@ -1,0 +1,229 @@
+---
+title: "Project 1: SMOTE-NC"
+output: pdf_document
+---
+
+# SMOTE
+
+```{r ,include=FALSE}
+#Packages required and installation
+pkgs=c("mice","VIM","tidyverse","archive","ggplot2","readr",
+       "knitr","caret","corrplot","FactoMineR","factoextra")
+for(p in pkgs){
+    if (!require(p,character.only=TRUE)) install.packages(p)
+}
+```
+
+```{r}
+library(readr)
+library(archive)
+
+# read data from UCI Machine Learning Repository
+url_ <- "https://archive.ics.uci.edu/static/public/571/hcv+data.zip"
+data <- read_csv(archive_read(url_, 1), show_col_types = FALSE)
+data <- subset(data, select = -...1)
+```
+
+```{r}
+# Implement MICE, using predictive mean matching (PMM)
+set.seed(321)
+imputed_data <- mice(data, m=10, method = "pmm")
+
+# Choose which of these imputed datasets
+imp.data <- complete(imputed_data,10)
+```
+
+```{r}
+# Pre-process data
+# Convert male or female data to numeric type
+imp.data$Sex <- ifelse(imp.data$Sex=="m", 1, 0)
+# Swap columns
+imp.data <- imp.data %>% relocate(Category, Sex)
+
+# Next, we create a 'training dataset,' on which we train or classifiers, and a 
+# 'testing dataset,' on which we shall test out classifiers.
+
+library(caret)
+trainIndex <- createDataPartition(imp.data$Category, p = 0.7,
+                                  list = FALSE,
+                                  times = 1)
+# Sub-setting into training data
+train <- imp.data[ trainIndex,]
+
+# Sub-setting into testing data
+test <- imp.data[-trainIndex,]
+
+# Let us inspect these new dataframes using frequency tables
+as.data.frame(table(train$Category))
+as.data.frame(table(test$Category))
+
+```
+
+
+
+## Mean centre and normalise the test and train data
+
+```{r}
+train1 <- subset(train, select = -c(Category, Sex))
+test1 <- subset(test, select = -c(Category, Sex))
+
+# Mean-centre and normalise the 11 features, doing nothing to the target
+# category, of course
+preProcValues <- preProcess(train1, method = c("center", "scale"))
+
+# Now, we transform the test data set using the same transformation parameters
+# that we used on the training set -- this is important.
+train.transformed <- predict(preProcValues, train1)
+test.transformed <- predict(preProcValues, test1)
+
+# Recombine into full scaled datasets
+train.scaled <- cbind(subset(train, select = c(Category, Sex)), train.transformed)
+test.scaled <- cbind(subset(test, select = c(Category, Sex)), test.transformed)
+
+```
+
+```{r}
+library(tidyverse)
+
+new.train <- train.scaled %>% 
+  mutate(Category = as.factor(str_replace_all(Category,
+                                              "0s=suspect Blood Donor", 
+                                              "0=Blood Donor")))
+
+# Let us inspect these new dataframes using frequency tables
+as.data.frame(table(new.train$Category))
+
+# The categories are clearly highly imbalanced. This can lead to issues.
+# To attempt to solve this, we shall use SMOTE-NC. Unfortunately, the packages
+# required to do this in R have been removed from CRAN; However, we can
+# simply perform this process using Python.
+
+# Write our data into a csv file -- please adjust the file path to your desired
+# location
+write.csv(new.train, "/Users/thomaspagulatos/Documents/R_stuff/train.csv",
+          row.names=FALSE)
+
+```
+
+# NOTE:
+At this point, please run the file smote.py. This will create a 'zip' file of the over-sampled synthetic data called 'sm_train.zip'. Please open this file, and save the data in your desired location so that you can run the next chunk, and read the file in R. 
+
+```{r}
+
+# NOTE! Please adjust the file path for your use
+train.smote <- read.csv("/Users/thomaspagulatos/Documents/R_stuff/sm_train.csv",
+                    header=TRUE)
+
+# We have scaled the data before over-sampling.
+# Let us look at the new ratios
+as.data.frame(table(train.smote$Category))
+
+```
+
+```{r}
+# At this stage, it is useful in the future to change the datatype in Category
+# from character to factor
+
+# Furthermore, we are interested in predicting if the patient is diseased or not
+# and so we split between 'Donor,' and 'Diseased,' by the latter we mean that 
+# the patient has a presence of liver disease.
+
+train <- train.smote %>% 
+  mutate(Category = if_else(str_detect(Category, "Donor"), "Donor",
+                            "Liver Disease")) %>%
+  mutate(Category = factor(Category, levels = c("Liver Disease", "Donor"))) %>%
+  relocate(Category, .before = Category) 
+
+test <- test.scaled %>%
+  mutate(Category = if_else(str_detect(Category, "Donor"), "Donor",
+                            "Liver Disease")) %>%
+  mutate(Category = factor(Category, levels = c("Liver Disease", "Donor"))) %>%
+  relocate(Category, .before = Category) 
+
+# Split our data into useful subsets. This is a common syntax.
+x.train <- subset(train, select = -Category)
+y.train <- subset(train, select = Category)
+x.test <- subset(test, select = -Category)
+y.test <- subset(test, select = Category)
+
+```
+
+
+
+```{r}
+library(caret)
+
+# Create a random forest classifier, that uses cross-validation
+train.data <- train
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+tunegrid <- expand.grid(.mtry=sqrt(ncol(train.data)))
+model_rf <- train(Category~., data=train.data, method="rf", metric="Accuracy", 
+                  tuneGrid=tunegrid, trControl=control)
+
+# View the model
+print(model_rf)
+
+# Test the model on unseen (scaled) test data
+pred_test <- predict(model_rf, x.test)
+confusionMatrix(pred_test, y.test$Category)
+
+```
+
+```{r}
+# Hyper-parameter optimisation
+# This may take a bit of time to run
+
+set.seed(1)
+tunegrid <- expand.grid(.mtry=seq(1, 3, length = 60))
+model_rf2 <- train(Category~., data=train.data, method="rf", metric="Accuracy", 
+                  tuneGrid=tunegrid, trControl=control)
+model_rf2
+# Plot optimised model
+plot(model_rf2)
+```
+
+```{r}
+# Check the performance of the model
+pred_test0 <- predict(model_rf2, x.test)
+confusionMatrix(pred_test0, y.test$Category)
+```
+
+```{r}
+train_control <- trainControl(method="repeatedcv", number=10, repeats=3)
+
+# Fit the model x
+svm1 <- train(Category ~., data = train.data, method = "svmLinear", trControl = train_control) 
+#View the model
+svm1
+```
+
+
+```{r}
+
+# Check the performance of the model
+pred_test1 <- predict(svm1, x.test)
+confusionMatrix(pred_test1, y.test$Category)
+
+```
+
+```{r}
+# Hyperparameter optimisation
+svm2 <- train(Category ~., data = train.data, method = "svmLinear", 
+              trControl = train_control,
+              tuneGrid = expand.grid(C = seq(0.1, 10, length = 200)))
+#View the model
+#svm2
+
+plot(svm2)
+svm2$bestTune
+
+```
+
+```{r}
+
+# Check the performance of the model
+pred_test1 <- predict(svm2, x.test)
+confusionMatrix(pred_test1, y.test$Category)
+
+```
+
