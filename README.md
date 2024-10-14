@@ -1,4 +1,4 @@
-# Project Title
+# Machine Learning Models for Disease Classification
 
 Binary classification for diagnosing liver disease (as a results of hepatitic C infection)
 
